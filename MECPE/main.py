@@ -1,16 +1,15 @@
-# 这是一个示例 Python 脚本。
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import numpy as np
+import data
 
-# 按 Shift+F10 执行或将其替换为您的代码。
-# 按 双击 Shift 在所有地方搜索类、文件、工具窗口、操作和设置。
-
-
-def print_hi(name):
-    # 在下面的代码行中使用断点来调试脚本。
-    print(f'Hi, {name}')  # 按 Ctrl+F8 切换断点。
-
-
-# 按装订区域中的绿色按钮以运行脚本。
 if __name__ == '__main__':
-    print_hi('PyCharm')
+    # Get text data and label
+    # And diag_label is a dict with key as diag_num and value as a dict with key as 'has_emotion', 'is_cause', 'pair',
+    # 'emotion'.
+    utterance, diag_utt_mapping, diag_label = data.get_text_and_label('data/all_data_pair.txt')
+    video_id_mapping = np.load('data/video_id_mapping.npy', allow_pickle=True)
+    audio = np.load('data/audio_embedding_6373.npy')
+    video = np.load('data/video_embedding_4096.npy')
 
-# 访问 https://www.jetbrains.com/help/pycharm/ 获取 PyCharm 帮助

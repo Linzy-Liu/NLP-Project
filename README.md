@@ -1,2 +1,2 @@
 # NLP-Project
- The respository is a temporal storage for my nlp projects
+ The repository is a temporal storage for my nlp projects
