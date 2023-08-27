@@ -134,3 +134,9 @@ class DataSet(object):
             paths, bert_path, choose_emo_cat, do_lower_case)
 
 
+def get_batch(dataset: DataSet, step=1, batch_size=8):
+    if step == 1:
+        # Wait to be completed
+        pass
+    else:
+        ValueError('The step must be 1 or 2.')
