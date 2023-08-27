@@ -1,42 +1,136 @@
 import numpy as np
-video_id_mapping = np.load('data/video_id_mapping.npy', allow_pickle=True)
+import torch
+import torch.nn as nn
+from transformers import BertTokenizer
+
+max_utt_num = 35
+max_sent_len = 35
+emotion_idx = dict(zip(['neutral', 'anger', 'disgust', 'fear', 'joy', 'sadness', 'surprise'], range(7)))
 
 
-def get_text_and_label(path):
+def get_video_and_audio(video_id_mapping_file, video_emb_file, audio_emb_file):
+    def normalize(x):
+        x1 = x[1:, :]
+        min_x = np.min(x1, axis=0, keepdims=True)
+        max_x = np.max(x1, axis=0, keepdims=True)
+        x1 = (x1 - min_x) / (max_x - min_x + 1e-8)
+        x[1:, :] = x1
+        return x
+
+    v_id_map = eval(str(np.load(video_id_mapping_file, allow_pickle=True)))
+    v_emb = normalize(np.load(video_emb_file, allow_pickle=True))
+    a_emb = normalize(np.load(audio_emb_file, allow_pickle=True))
+    return v_id_map, v_emb, a_emb
+
+
+def get_glove_embedding(path, words=None):
     with open(path, 'r', encoding='utf-8') as f:
-        utterance = []
-        diag_utt_mapping = {}
-        diag_label = {}
-        line = f.readline()
-        while line:
-            tmp = line.split(' ')
-            diag_num = int(tmp[0])
-            utt_sum = int(tmp[1])
-            diag_utt_mapping[diag_num] = (len(utterance), len(utterance) + utt_sum - 1)
-            labels = f.readline()
-            if labels == '\n':
-                diag_label[diag_num] = {
-                    'has_emotion': [],
-                    'is_cause': [],
-                    'pair': []
-                }
-            else:
-                labels = labels.replace('(', '').replace(')', '').replace('\n', '').split(',')
-                tuple_string = [(int(labels[i]), int(labels[i + 1])) for i in range(0, len(labels), 2)]
-                diag_label[diag_num] = {
-                    'has_emotion': list(set([i[0] for i in tuple_string])),
-                    'is_cause': list(set([i[1] for i in tuple_string])),
-                    'pair': tuple_string
-                }
-            emotion = []
-            for i in range(utt_sum):
-                line = f.readline()
-                parts = line.split(' | ')
-                emotion.append(parts[2])
-                utterance.append(parts[3])
-            diag_label[diag_num]['emotion'] = emotion
-            line = f.readline()
-    return utterance, diag_utt_mapping, diag_label
+        vocab = {}
+        line = f.readline().split(' ')
+        vocab_num = int(line[0])
+        vocab_dim = int(line[1])
+        for i in range(vocab_num):
+            line = f.readline().split(' ')
+            vocab[line[0]] = np.array(line[1:], dtype=np.float64)
+    if words is not None:
+        for word in words:
+            if word not in vocab:
+                vocab[word] = list(np.random.rand(vocab_dim) / 5. - 0.1)
+    return vocab
 
-def get_vocab(path):
+
+def load_data_step1(paths,
+                    bert_path='F:/python_work/GitHub/bert-base-uncased',
+                    choose_emo_cat: bool = False,
+                    do_lower_case: bool = True):
+    """
+    Load the data from the given paths: [word_path, video_id_mapping_filename, video_emb_filename, audio_emb_filename]
+    :param paths: strings of paths: [word_path, video_id_mapping_filename, video_emb_filename, audio_emb_filename]
+    :param bert_path: The path of bert model
+    :param choose_emo_cat: Whether to choose the emotion category
+    :param do_lower_case: The setting of bert model
+    :return: The dataset for step1
+    """
+    print('Loading data from {} ...'.format(paths[0]))
+
+    word_path, video_id_mapping_file, video_emb_file, audio_emb_file = paths
+    v_id_map, v_emb, a_emb = get_video_and_audio(video_id_mapping_file, video_emb_file, audio_emb_file)
+    tokenizer = BertTokenizer.from_pretrained(bert_path, do_lower_case=do_lower_case)
+
+    diag_id, diag_len = [], []
+    x_bert_sent, x_bert_sent_mask = [], []
+    x_video = []
+    y_emotion, y_cause, y_pairs = [], [], []
+
+    with open(word_path, 'r', encoding='utf-8') as f:
+        while True:
+            line = f.readline().strip().split(' ')
+            if line == '':
+                break
+
+            d_id, d_len = int(line[0]), int(line[1])
+            diag_id.append(d_id)
+            diag_len.append(d_len)
+
+            # store labels
+            y_pairs_tmp = eval('[' + f.readline().strip() + ']')
+            y_pairs_tmp = [list(i) for i in y_pairs_tmp]
+            y_emotion_tmp = np.zeros((max_utt_num, 7)) if choose_emo_cat else np.zeros((max_utt_num, 2))
+            y_cause_tmp = np.zeros((max_utt_num, 2))
+
+            has_emo_tmp = [y_pairs_tmp[i][0] for i in range(len(y_pairs_tmp))]
+            is_cause_tmp = [y_pairs_tmp[i][1] for i in range(len(y_pairs_tmp))]
+            for i in range(d_len):
+                if not choose_emo_cat:
+                    y_emotion_tmp[i, :] = np.array([0, 1]) if i + 1 in has_emo_tmp else np.array([1, 0])
+                y_cause_tmp[i, :] = np.array([0, 1]) if i + 1 in is_cause_tmp else np.array([1, 0])
+
+            # Initialize the shape
+            x_bert_sent_tmp, x_bert_sent_mask_tmp = [
+                np.zeros((max_utt_num, max_sent_len), dtype=np.int64) for _ in range(2)]
+            x_video_tmp = np.zeros(max_utt_num, dtype=np.float64)
+
+            # tokenize utterances
+            for i in range(d_len):
+                line = f.readline().strip().split(' | ')
+                x_video_tmp[i] = v_id_map['dia{}_utt{}'.format(d_id, i + 1)]
+
+                tmp_token = tokenizer.tokenize(line[3])
+                if len(tmp_token) > max_sent_len - 2:  # Cut the sentence to the max length; -2 for [CLS] and [SEP]
+                    tmp_token = tmp_token[:max_sent_len - 2]
+                tmp_token = ['[CLS]'] + tmp_token + ['[SEP]']
+                input_ids = tokenizer.convert_tokens_to_ids(tmp_token)
+                x_bert_sent_tmp[i, :len(input_ids)] = input_ids
+                x_bert_sent_mask_tmp[i, :len(input_ids)] = 1
+
+                if choose_emo_cat:
+                    y_emotion_tmp[i, :] = np.array([1 if i == emotion_idx[line[2]] else 0 for i in range(7)])
+
+            # store data
+            x_bert_sent.append(x_bert_sent_tmp)
+            x_bert_sent_mask.append(x_bert_sent_mask_tmp)
+            x_video.append(x_video_tmp)
+            y_emotion.append(y_emotion_tmp)
+            y_cause.append(y_cause_tmp)
+            y_pairs.append(y_pairs_tmp)
+
+    x_video, x_bert_sent, x_bert_sent_mask, y_emotion, y_cause, y_pairs, diag_id, diag_len = map(
+        np.array, [x_video, x_bert_sent, x_bert_sent_mask, y_emotion, y_cause, y_pairs, diag_id, diag_len]
+    )
+    print('Finish loading data from {} ...'.format(paths[0]))
+    return x_video, x_bert_sent, x_bert_sent_mask, y_emotion, y_cause, y_pairs, diag_id, diag_len, v_emb, a_emb
+
+
+class DataSet(object):
+    def __init__(self, word_data_path, video_id_mapping_file, video_emb_file, audio_emb_file,
+                 bert_path='F:/python_work/GitHub/bert-base-uncased',
+                 choose_emo_cat=False,
+                 do_lower_case=True):
+        self.choose_emo_cat = choose_emo_cat
+        paths = [word_data_path, video_id_mapping_file, video_emb_file, audio_emb_file]
+
+        self.x_video, self.x_bert_sent, self.x_bert_sent_mask, self.y_emotion, self.y_cause, self.y_pairs, \
+            self.diag_id, self.diag_len, self.v_emb, self.a_emb = load_data_step1(
+            paths, bert_path, choose_emo_cat, do_lower_case)
+
 
