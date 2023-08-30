@@ -3,8 +3,6 @@ import torch
 import torch.nn as nn
 from transformers import BertTokenizer
 
-max_utt_num = 35
-max_sent_len = 35
 emotion_idx = dict(zip(['neutral', 'anger', 'disgust', 'fear', 'joy', 'sadness', 'surprise'], range(7)))
 
 
@@ -40,11 +38,15 @@ def get_glove_embedding(path, words=None):
 
 
 def load_data_step1(paths,
+                    max_utt_num: int = 35,
+                    max_sent_len: int = 35,
                     bert_path='F:/python_work/GitHub/bert-base-uncased',
                     choose_emo_cat: bool = False,
                     do_lower_case: bool = True):
     """
     Load the data from the given paths: [word_path, video_id_mapping_filename, video_emb_filename, audio_emb_filename]
+    :param max_sent_len: The max length of sentence
+    :param max_utt_num: The max number of utterances
     :param paths: strings of paths: [word_path, video_id_mapping_filename, video_emb_filename, audio_emb_filename]
     :param bert_path: The path of bert model
     :param choose_emo_cat: Whether to choose the emotion category
@@ -123,20 +125,34 @@ def load_data_step1(paths,
 
 class DataSet(object):
     def __init__(self, word_data_path, video_id_mapping_file, video_emb_file, audio_emb_file,
+                 max_utt_num=35, max_sent_len=35,
                  bert_path='F:/python_work/GitHub/bert-base-uncased',
                  choose_emo_cat=False,
                  do_lower_case=True):
         self.choose_emo_cat = choose_emo_cat
         paths = [word_data_path, video_id_mapping_file, video_emb_file, audio_emb_file]
 
-        self.x_video, self.x_bert_sent, self.x_bert_sent_mask, self.y_emotion, self.y_cause, self.y_pairs, \
-            self.diag_id, self.diag_len, self.v_emb, self.a_emb = load_data_step1(
-            paths, bert_path, choose_emo_cat, do_lower_case)
+        self.x_video, self.x_bert_sent, self.x_bert_sent_mask, \
+            self.y_emotion, self.y_cause, self.y_pairs, \
+            self.diag_id, self.diag_len, \
+            self.v_emb, self.a_emb = \
+            load_data_step1(paths, max_utt_num, max_sent_len,
+                            bert_path, choose_emo_cat,
+                            do_lower_case)
 
 
 def get_batch(dataset: DataSet, step=1, batch_size=8):
     if step == 1:
-        # Wait to be completed
+        x_video, x_bert_sent, x_bert_sent_mask, y_emotion, y_cause, diag_len = \
+            dataset.x_video, dataset.x_bert_sent, dataset.x_bert_sent_mask, dataset.y_emotion, dataset.y_cause, dataset.diag_len
+        batch_num = int(np.ceil(len(x_video) / batch_size))
+        for i in range(batch_num):
+            start = i * batch_size
+            end = min((i + 1) * batch_size, len(x_video))
+            yield x_video[start:end], x_bert_sent[start:end], x_bert_sent_mask[start:end], \
+                y_emotion[start:end], y_cause[start:end], diag_len[start:end]
+    elif step == 2:
+        # wait to be implemented
         pass
     else:
         ValueError('The step must be 1 or 2.')

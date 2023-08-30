@@ -25,19 +25,11 @@ def concat_feature(x, x_audio, x_video):
     return x
 
 
-class MultiHeadAttention(nn.Module):
-    def __int__(self, n_hidden, n_head=8, dropout=0.1):
-        super(MultiHeadAttention, self).__init__()
-        self.n_hidden = n_hidden
-        self.n_head = n_head
-        self.d_k = n_hidden // n_head
-
-
 class RealTimeTransformer(nn.Module):
     def __init__(self, n_hidden, n_head=1):
         super(RealTimeTransformer, self).__init__()
         # Multi-head Attention mechanism
-
+        self.self_attn = nn.MultiheadAttention(n_hidden, n_head, batch_first=True)
         # Point-wise Feedforward network
         self.fc1 = nn.Linear(n_hidden, n_hidden)
         self.fc2 = nn.Linear(n_hidden, n_hidden)
@@ -48,20 +40,27 @@ class RealTimeTransformer(nn.Module):
 
     def forward(self, x):
         # x shape: [batch_size, max_len, n_hidden]
-        # Multi-head Attention requires input as [max_len, batch_size, n_hidden]
-        x_transposed = x.transpose(0, 1)
-
         # Multi-head Attention
+        key_sum = torch.sum(torch.abs(x), dim=-1)
+        key_mask = torch.sign(key_sum).repeat([self.n_head, 1])  # [n_head * batch_size, max_len]
+        key_mask = key_mask.unsqueeze(1).repeat([1, x.shape[1], 1])  # [n_head * batch_size, max_len, max_len]
+        real_time_mask = torch.triu(torch.ones((x.shape[1], x.shape[1])), diagonal=1).to(x.device)
+        mask = key_mask * real_time_mask == 0
+        attn_output, _ = self.self_attn(x, x, x, attn_mask=mask)
 
-        x = self.norm1(attn_output + x_transposed)
+        x = self.norm1(attn_output + x)
         # Point-wise Feedforward
         output = self.relu(self.fc1(x))
         output = self.fc2(output)
         output = self.norm2(output + x)
 
-        # Convert shape back to [batch_size, max_len, n_hidden]
-        output = output.transpose(0, 1)
         return output
+
+    def init_weights(self, init_range=0.1):
+        nn.init.uniform_(self.fc1.weight, -init_range, init_range)
+        nn.init.zeros_(self.fc1.bias)
+        nn.init.uniform_(self.fc2.weight, -init_range, init_range)
+        nn.init.zeros_(self.fc2.bias)
 
 
 class MECPEStep1(nn.Module):
@@ -72,17 +71,13 @@ class MECPEStep1(nn.Module):
                  dropout=None,
                  embeddings=None,
                  use_audio=True,
-                 use_video=True
+                 use_video=True,
+                 choose_emo_cat=False
                  ):
         """
-
-        :param hidden_dim:
-        :param max_sent_len:
-        :param max_utt_num:
+        The first step of MECPE.
         :param dropout: If dropout is a list, then it is [dropout_audio, dropout_video, dropout_bert_hidden, dropout_bert_attention, dropout_softmax]. If it is a float, then it is the global dropout.
-        :param use_audio:
-        :param use_video:
-        :param embeddings:
+        :param embeddings: The list of embeddings [audio_embeddings, video_embeddings]. If one of them is None, then the corresponding modality is not used.
         """
         super(MECPEStep1, self).__init__()
         if dropout is None:
@@ -107,13 +102,16 @@ class MECPEStep1(nn.Module):
         self.hidden_dim = hidden_dim
         self.max_shape = [max_utt_num, max_sent_len]
 
+        self.relu = nn.ReLU()
+        self.softmax = nn.Softmax(dim=-1)
+        self.norm = nn.LayerNorm(hidden_dim)
+
         config = BertConfig.from_pretrained('bert-base-uncased')
         config.output_hidden_states = True
         config.hidden_dropout_prob = dropout_bert_hidden
         config.attention_probs_dropout_prob = dropout_bert_attention
-        self.relu = nn.ReLU()
-        self.norm = nn.LayerNorm(hidden_dim)
         self.BERT = BertModel.from_pretrained('bert-base-uncased', config=config)
+        self.transformer = RealTimeTransformer(hidden_dim, n_head=2)
         # linear settings
         self.linear_audio_emotion = nn.Linear(6373, hidden_dim)
         self.linear_audio_cause = nn.Linear(6373, hidden_dim)
@@ -121,6 +119,9 @@ class MECPEStep1(nn.Module):
         self.linear_video_cause = nn.Linear(4096, hidden_dim)
         self.linear_fusion_emotion = nn.Linear(hidden_dim * np.sum([self.use_audio, self.use_video]) + 768, hidden_dim)
         self.linear_fusion_cause = nn.Linear(hidden_dim * np.sum([self.use_audio, self.use_video]) + 768, hidden_dim)
+        pred_dim = 7 if choose_emo_cat else 2
+        self.linear_emotion_pred = nn.Linear(hidden_dim, pred_dim)
+        self.linear_cause_pred = nn.Linear(hidden_dim, pred_dim)
 
     def forward(self, x_a_v, bert_input, diag_len):
         """
@@ -144,7 +145,7 @@ class MECPEStep1(nn.Module):
         feature_mask = get_mask(diag_len, self.max_shape[0], [-1, self.max_shape[0], 1])
         x_bert_sen = x_bert_sent.view(-1, self.max_shape[1])
         x_mask_bert_sen = x_bert_sent_mask.view(-1, self.max_shape[1])
-        # 4. 进行前向传播以获取pooled_output
+
         outputs = self.BERT(x_bert_sen, attention_mask=x_mask_bert_sen)
         s_bert = outputs[1]
         s_bert = s_bert.view(-1, self.max_shape[0], s_bert.shape[-1])
@@ -171,3 +172,35 @@ class MECPEStep1(nn.Module):
                                  x_video_cause if self.use_video else None)
         x_cause = x_cause * feature_mask
         x_cause = self.linear_fusion_cause(x_cause)
+        # Get the expression vector of emotion and cause
+        x_emotion = self.transformer(x_emotion)  # [batch_size, max_utt_num, hidden_dim]
+        x_cause = self.transformer(x_cause)  # [batch_size, max_utt_num, hidden_dim]
+
+        # Get the prediction of emotion and cause
+        x_emotion = self.dropout_softmax(x_emotion)
+        x_cause = self.dropout_softmax(x_cause)
+        x_emotion = self.softmax(self.linear_emotion_pred(x_emotion))
+        x_cause = self.softmax(self.linear_cause_pred(x_cause))
+
+        reg = torch.norm(self.linear_emotion_pred.weight, p=2) +  torch.norm(self.linear_emotion_pred.bias, p=2) + torch.norm(
+            self.linear_cause_pred.weight, p=2) + torch.norm(self.linear_cause_pred.bias, p=2)
+
+        emotion_pred = torch.argmax(x_emotion, dim=-1)
+        cause_pred = torch.argmax(x_cause, dim=-1)
+        return emotion_pred, cause_pred, reg
+
+    def init_weights(self, init_range=0.1):
+        def _init_linear(linear):
+            nn.init.uniform_(linear.weight, -init_range, init_range)
+            nn.init.zeros_(linear.bias)
+
+        _init_linear(self.linear_audio_emotion)
+        _init_linear(self.linear_audio_cause)
+        _init_linear(self.linear_video_emotion)
+        _init_linear(self.linear_video_cause)
+        _init_linear(self.linear_fusion_emotion)
+        _init_linear(self.linear_fusion_cause)
+        _init_linear(self.linear_emotion_pred)
+        _init_linear(self.linear_cause_pred)
+        self.transformer.init_weights(init_range)
+
