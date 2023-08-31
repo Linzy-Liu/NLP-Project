@@ -6,7 +6,7 @@ The code in this repository is a reproduction of the paper *"Multimodal Emotion-
 According to the paper, the MECPE task here will use the following features with Real-time Setting:
 * **Text Embedding**: BERT
 * **Audio Embedding**: openSMILE
-* **Video Embedding**: 3D-CNN(C3D) *But probably not implemented*
+* **Video Embedding**: 3D-CNN(C3D)
 * **CSKB**: COMET-ATOMIC_2020, xReact+oReact
 * **Model fusion method**: Add
 

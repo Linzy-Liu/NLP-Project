@@ -1,13 +1,15 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+from transformers import get_linear_schedule_with_warmup
 import numpy as np
-import pandas as pd
 import data
 import model
 
+epochs = 100  # The number of epochs
 batch_size = 8  # The number of dialogues in a batch
 hidden_dim = 200  # The dimension of hidden layer
+learning_rate = 1e-5
+warmup_percent = 0.1
 max_utt_num = 35
 max_sent_len = 35
 
@@ -35,10 +37,21 @@ if __name__ == '__main__':
 
     def train_step1():
         model1.train()
+        print('Training step1 ...')
 
         train_loss = 0
         criterion = nn.CrossEntropyLoss()
         model1.init_weights()
+        optimizer = torch.optim.AdamW(model1.parameters(), lr=learning_rate)
+
+        num_training_steps = epochs * int(np.ceil(len(train_data) / batch_size))
+        num_warmup_steps = int(num_training_steps * warmup_percent)
+        scheduler = get_linear_schedule_with_warmup(optimizer,
+                                                    num_warmup_steps=num_warmup_steps,
+                                                    num_training_steps=num_training_steps)
+
+        for epoch in range(epochs):
+
 
 
 

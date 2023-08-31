@@ -140,6 +140,9 @@ class DataSet(object):
                             bert_path, choose_emo_cat,
                             do_lower_case)
 
+    def __len__(self):
+        return len(self.x_video)
+
 
 def get_batch(dataset: DataSet, step=1, batch_size=8):
     if step == 1:
