@@ -159,3 +159,37 @@ def get_batch(dataset: DataSet, step=1, batch_size=8):
         pass
     else:
         ValueError('The step must be 1 or 2.')
+
+
+def cal_prf(pred_y, y, diag_len, num_class):
+    """
+    Calculate the precision, recall and f1 score.
+    :param diag_len: The length of each dialogue.
+    :param pred_y: The prediction of model.
+    :param y: The ground truth.
+    :param num_class: The number of classes.
+    :return: The precision, recall and f1 score.
+    """
+
+    tp = np.zeros(num_class)
+    fp = np.zeros(num_class)
+    fn = np.zeros(num_class)
+
+    for i in range(len(diag_len)):
+        for j in range(diag_len[i]):
+            if pred_y[i, j] == y[i, j]:
+                tp[pred_y[i, j]] += 1
+            else:
+                fp[pred_y[i, j]] += 1
+                fn[y[i, j]] += 1
+    if num_class > 2:
+        precision = tp / (tp + fp + 1e-8)
+        recall = tp / (tp + fn + 1e-8)
+        f1 = 2 * precision * recall / (precision + recall + 1e-8)
+    else:
+        precision = tp[1] / (tp[1] + fp[0] + 1e-8)
+        recall = tp[1] / (tp[1] + fn[0] + 1e-8)
+        f1 = 2 * precision * recall / (precision + recall + 1e-8)
+    return precision, recall, f1
+
+

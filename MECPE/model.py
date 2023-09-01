@@ -204,3 +204,9 @@ class MECPEStep1(nn.Module):
         _init_linear(self.linear_cause_pred)
         self.transformer.init_weights(init_range)
 
+class MECPEStep2(nn.Module):
+    def __init__(self):
+        super(MECPEStep2, self).__init__()
+        # TODO: wait to be implemented
+        pass
+
