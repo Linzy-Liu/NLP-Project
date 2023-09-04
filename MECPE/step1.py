@@ -6,7 +6,7 @@ import numpy as np
 import data
 import model
 
-epochs = 100  # The number of epochs
+epochs = 20  # The number of epochs
 batch_size = 8  # The number of dialogues in a batch
 hidden_dim = 200  # The dimension of hidden layer
 learning_rate = 1e-5
@@ -14,6 +14,7 @@ warmup_percent = 0.1
 max_utt_num = 35
 max_sent_len = 35
 report_freq = 100
+real_time = True
 choose_emo_cat = False
 
 if __name__ == '__main__':
@@ -35,7 +36,13 @@ if __name__ == '__main__':
         'data/video_id_mapping.npy',
         'data/video_embedding_4096.npy',
         'data/audio_embedding_6373.npy')
-    model1 = model.MECPEStep1(hidden_dim, max_utt_num, max_sent_len, choose_emo_cat=choose_emo_cat).to(device)
+    model1 = model.MECPEStep1(
+        hidden_dim, max_utt_num, max_sent_len,
+        embeddings=[torch.from_numpy(train_data.audio_embedding).to(device),
+                    torch.from_numpy(train_data.video_embedding).to(device)],
+        choose_emo_cat=choose_emo_cat
+    ).to(device)
+    criterion = nn.NLLLoss()  # Since we've used log_softmax in the model, we use NLLLoss here.
 
 
     def evaluate_step1(dataset: data.DataSet):
@@ -50,8 +57,9 @@ if __name__ == '__main__':
             y_cause = torch.from_numpy(y_cause).argmax(dim=-1).to(device)
 
             y_emotion_pred, y_cause_pred, reg = model1(x_a_v, bert_input, diag_len)
-            criterion = nn.CrossEntropyLoss()
-            loss = criterion(y_emotion_pred, y_emotion) + criterion(y_cause_pred, y_cause) + reg
+            pred_dim = y_emotion_pred.shape[-1]
+            loss = (criterion(y_emotion_pred.reshape(-1, pred_dim), y_emotion.reshape(-1))
+                    + criterion(y_cause_pred.reshape(-1, pred_dim), y_cause.reshape(-1)) + reg)
             emo_p, emo_r, emo_f1 = data.cal_prf(y_emotion_pred, y_emotion, diag_len, 7 if choose_emo_cat else 2)
             cause_p, cause_r, cause_f1 = data.cal_prf(y_cause_pred, y_cause, diag_len, 2)
         print(
@@ -66,7 +74,6 @@ if __name__ == '__main__':
         start_time = time.time()
 
         train_loss = 0
-        criterion = nn.CrossEntropyLoss()
         model1.init_weights()
         model1.to(device)
         optimizer = torch.optim.AdamW(model1.parameters(), lr=learning_rate)
@@ -92,7 +99,9 @@ if __name__ == '__main__':
                 y_cause = torch.from_numpy(y_cause).argmax(dim=-1).to(device)
 
                 y_emotion_pred, y_cause_pred, reg = model1(x_a_v, bert_input, diag_len)
-                loss = criterion(y_emotion_pred, y_emotion) + criterion(y_cause_pred, y_cause) + reg
+                pred_dim = y_emotion_pred.shape[-1]
+                loss = (criterion(y_emotion_pred.reshape(-1, pred_dim), y_emotion.reshape(-1))
+                        + criterion(y_cause_pred.reshape(-1, pred_dim), y_cause.reshape(-1)) + reg)
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model1.parameters(), 1.0)
 
@@ -119,7 +128,6 @@ if __name__ == '__main__':
                 y_cause = torch.from_numpy(y_cause).argmax(dim=-1).to(device)
 
                 y_emotion_pred, y_cause_pred, reg = model1(x_a_v, bert_input, diag_len)
-                criterion = nn.CrossEntropyLoss()
                 emo_p, emo_r, emo_f1 = data.cal_prf(y_emotion_pred, y_emotion, diag_len, 7 if choose_emo_cat else 2)
                 cause_p, cause_r, cause_f1 = data.cal_prf(y_cause_pred, y_cause, diag_len, 2)
                 print(
@@ -130,15 +138,60 @@ if __name__ == '__main__':
         return loss_list, emo_list, cause_list
 
 
-    def write_data(loss_list, emo_list, cause_list):
-        with open('loss.txt', 'w') as f:
+    def write_data(dir_path, loss_list, emo_list, cause_list):
+        with open(dir_path + '/log/loss.txt', 'w') as f:
             for i in loss_list:
                 f.write('Batch: {:d}\t Loss: {:.4f}\n'.format(i[0], i[1]))
-        with open('emo.txt', 'w') as f:
+        with open(dir_path + '/log/emo.txt', 'w') as f:
             for i in emo_list:
                 f.write('Epoch: {:d}\t P: {:.4f}\t R: {:.4f}\t F1: {:.4f}\n'.format(i[0], i[1], i[2], i[3]))
-        with open('cause.txt', 'w') as f:
+        with open(dir_path + '/log/cause.txt', 'w') as f:
             for i in cause_list:
                 f.write('Epoch: {:d}\t P: {:.4f}\t R: {:.4f}\t F1: {:.4f}\n'.format(i[0], i[1], i[2], i[3]))
+        with open(dir_path + '/save/model.pkl', 'wb') as f:
+            torch.save(model1, f)
+        start_time = time.time()
+        print('Start to predict train set, dev set and test set ...')
+        with (torch.no_grad()):
+            def predict(dataset):
+                x_video, x_bert_sent, x_bert_sent_mask, y_emotion, y_cause, diag_len = dataset.x_video, dataset.x_bert_sent, \
+                    dataset.x_bert_sent_mask, dataset.y_emotion, dataset.y_cause, dataset.diag_len
+                x_a_v = [torch.from_numpy(x_video).to(device) for _ in range(2)]
+                bert_input = [torch.from_numpy(x_bert_sent).to(device), torch.from_numpy(x_bert_sent_mask).to(device)]
+
+                y_emotion_pred, y_cause_pred, _ = model1(x_a_v, bert_input, diag_len)
+                return y_emotion_pred, y_cause_pred
+
+            # Predict the train set, dev set and test set
+            y_emotion_pred_train, y_cause_pred_train = predict(train_data)
+            y_cause_pred_train, y_cause_pred_train = \
+                torch.argmax(y_cause_pred_train, dim=-1), torch.argmax(y_cause_pred_train, dim=-1)
+            y_emotion_pred_dev, y_cause_pred_dev = predict(dev_data)
+            y_emotion_pred_dev, y_cause_pred_dev = \
+                torch.argmax(y_emotion_pred_dev, dim=-1), torch.argmax(y_cause_pred_dev, dim=-1)
+            y_emotion_pred_test, y_cause_pred_test = predict(test_data)
+            y_emotion_pred_test, y_cause_pred_test = \
+                torch.argmax(y_emotion_pred_test, dim=-1), torch.argmax(y_cause_pred_test, dim=-1)
+
+        print('Predicting finished. Time: {:.2f}s'.format(time.time() - start_time))
+        with open(dir_path + 'save/pred_train.txt', 'w') as f:
+            for i in range(len(train_data.diag_len)):
+                f.write('{} {}\n'.format(train_data.diag_id[i], train_data.diag_len[i]))
+                f.write('{}\n'.format(y_emotion_pred_train[i].cpu().numpy()))
+                f.write('{}\n'.format(y_cause_pred_train[i].cpu().numpy()))
+        with open(dir_path + 'save/pred_dev.txt', 'w') as f:
+            for i in range(len(dev_data.diag_len)):
+                f.write('{} {}\n'.format(dev_data.diag_id[i], dev_data.diag_len[i]))
+                f.write('{}\n'.format(y_emotion_pred_dev[i].cpu().numpy()))
+                f.write('{}\n'.format(y_cause_pred_dev[i].cpu().numpy()))
+        with open(dir_path + 'save/pred_test.txt', 'w') as f:
+            for i in range(len(test_data.diag_len)):
+                f.write('{} {}\n'.format(test_data.diag_id[i], test_data.diag_len[i]))
+                f.write('{}\n'.format(y_emotion_pred_test[i].cpu().numpy()))
+                f.write('{}\n'.format(y_cause_pred_test[i].cpu().numpy()))
+        print('Writing finished.')
 
 
+    loss_list, emo_list, cause_list = train_step1()
+    write_data('step1', loss_list, emo_list, cause_list)
+    evaluate_step1(dev_data)
