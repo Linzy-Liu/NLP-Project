@@ -4,8 +4,7 @@ import torch.nn.functional as F
 import numpy as np
 from transformers import BertTokenizer, BertModel, BertConfig
 
-# bert_path = 'F:/python_work/GitHub/bert-base-uncased'
-bert_path = 'bert-base-uncased'
+bert_path = 'F:/python_work/GitHub/bert-base-uncased'
 
 
 def get_mask(length, max_len, out_shape):
@@ -82,7 +81,8 @@ class MECPEStep1(nn.Module):
                  use_audio=True,
                  use_video=True,
                  choose_emo_cat=False,
-                 real_time=True
+                 real_time=True,
+                 bert_path=bert_path
                  ):
         """
         The first step of MECPE.

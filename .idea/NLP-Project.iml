@@ -4,7 +4,7 @@
     <content url="file://$MODULE_DIR$">
       <excludeFolder url="file://$MODULE_DIR$/MECPE/data" />
     </content>
-    <orderEntry type="jdk" jdkName="Remote Python 3.6.9 (sftp://liuyuzhe@10.249.46.195:33322/home/liuyuzhe/.virtualenvs/NLP-Project/bin/python)" jdkType="Python SDK" />
+    <orderEntry type="jdk" jdkName="Python 3.9 (Python)" jdkType="Python SDK" />
     <orderEntry type="sourceFolder" forTests="false" />
   </component>
 </module>

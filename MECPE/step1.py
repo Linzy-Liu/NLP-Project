@@ -7,7 +7,7 @@ import data
 import model
 
 epochs = 20  # The number of epochs
-batch_size = 8  # The number of dialogues in a batch
+batch_size = 4  # The number of dialogues in a batch
 hidden_dim = 200  # The dimension of hidden layer
 learning_rate = 1e-5
 warmup_percent = 0.1
@@ -16,31 +16,31 @@ max_sent_len = 35
 report_freq = 100
 real_time = True
 choose_emo_cat = False
+bert_path = 'F:/python_work/GitHub/bert-base-uncased'
 
 if __name__ == '__main__':
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print('device:', device)
     # Load the data
+    emb_paths = ['data/video_id_mapping.npy', 'data/video_embedding_4096.npy', 'data/audio_embedding_6373.npy', ]
     train_data = data.DataSet(
-        'data/train.txt',
-        'data/video_id_mapping.npy',
-        'data/video_embedding_4096.npy',
-        'data/audio_embedding_6373.npy')
+        ['data/train.txt'] + emb_paths,
+        bert_path=bert_path
+    )
     dev_data = data.DataSet(
-        'data/dev.txt',
-        'data/video_id_mapping.npy',
-        'data/video_embedding_4096.npy',
-        'data/audio_embedding_6373.npy')
+        ['data/dev.txt'] + emb_paths,
+        bert_path=bert_path
+    )
     test_data = data.DataSet(
-        'data/test.txt',
-        'data/video_id_mapping.npy',
-        'data/video_embedding_4096.npy',
-        'data/audio_embedding_6373.npy')
+        ['data/test.txt'] + emb_paths,
+        bert_path=bert_path
+    )
     model1 = model.MECPEStep1(
         hidden_dim, max_utt_num, max_sent_len,
         embeddings=[torch.from_numpy(train_data.audio_embedding).to(device),
                     torch.from_numpy(train_data.video_embedding).to(device)],
-        choose_emo_cat=choose_emo_cat
+        choose_emo_cat=choose_emo_cat,
+        bert_path=bert_path
     ).to(device)
     criterion = nn.NLLLoss()  # Since we've used log_softmax in the model, we use NLLLoss here.
 
@@ -75,7 +75,6 @@ if __name__ == '__main__':
 
         train_loss = 0
         model1.init_weights()
-        model1.to(device)
         optimizer = torch.optim.AdamW(model1.parameters(), lr=learning_rate)
 
         num_training_steps = epochs * int(np.ceil(len(train_data) / batch_size))
@@ -173,22 +172,18 @@ if __name__ == '__main__':
             y_emotion_pred_test, y_cause_pred_test = \
                 torch.argmax(y_emotion_pred_test, dim=-1), torch.argmax(y_cause_pred_test, dim=-1)
 
-        print('Predicting finished. Time: {:.2f}s'.format(time.time() - start_time))
-        with open(dir_path + 'save/pred_train.txt', 'w') as f:
-            for i in range(len(train_data.diag_len)):
-                f.write('{} {}\n'.format(train_data.diag_id[i], train_data.diag_len[i]))
-                f.write('{}\n'.format(y_emotion_pred_train[i].cpu().numpy()))
-                f.write('{}\n'.format(y_cause_pred_train[i].cpu().numpy()))
-        with open(dir_path + 'save/pred_dev.txt', 'w') as f:
-            for i in range(len(dev_data.diag_len)):
-                f.write('{} {}\n'.format(dev_data.diag_id[i], dev_data.diag_len[i]))
-                f.write('{}\n'.format(y_emotion_pred_dev[i].cpu().numpy()))
-                f.write('{}\n'.format(y_cause_pred_dev[i].cpu().numpy()))
-        with open(dir_path + 'save/pred_test.txt', 'w') as f:
-            for i in range(len(test_data.diag_len)):
-                f.write('{} {}\n'.format(test_data.diag_id[i], test_data.diag_len[i]))
-                f.write('{}\n'.format(y_emotion_pred_test[i].cpu().numpy()))
-                f.write('{}\n'.format(y_cause_pred_test[i].cpu().numpy()))
+            print('Predicting finished. Time: {:.2f}s'.format(time.time() - start_time))
+            print('Writing results ...')
+
+            def put_data(dataset: data.DataSet, y_emotion_pred, y_cause_pred, dir_path, file_name):
+                with open('{}/save/{}.txt'.format(dir_path, file_name), 'w') as file:
+                    for i in range(len(dataset)):
+                        file.write('{} {}'.format(dataset.diag_id[i], dataset.diag_len[i]))
+                        for j in range(dataset.diag_len[i]):
+                            file.write('{} | {} | {}\n'.format(j + 1, y_emotion_pred[i, j], y_cause_pred[i, j]))
+            put_data(train_data, y_emotion_pred_train, y_cause_pred_train, dir_path, 'train')
+            put_data(dev_data, y_emotion_pred_dev, y_cause_pred_dev, dir_path, 'dev')
+            put_data(test_data, y_emotion_pred_test, y_cause_pred_test, dir_path, 'test')
         print('Writing finished.')
 
 
