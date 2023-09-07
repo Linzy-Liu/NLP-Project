@@ -69,7 +69,6 @@ if __name__ == '__main__':
 
 
     def train_step1():
-        model1.train()
         print('Training step1 ...')
         start_time = time.time()
 
@@ -89,6 +88,7 @@ if __name__ == '__main__':
         cause_list = []
         for epoch in range(epochs):
             for batch in data.get_batch(train_data, step=1, batch_size=batch_size):
+                model1.train()
                 optimizer.zero_grad()
                 train_step += 1
                 x_v, x_bert_sent, x_bert_sent_mask, y_emotion, y_cause, diag_len = batch
@@ -119,6 +119,7 @@ if __name__ == '__main__':
                     loss_list.append([train_step, cur_loss_avg])
 
             with torch.no_grad():
+                model1.eval()
                 x_v, x_bert_sent, x_bert_sent_mask, y_emotion, y_cause, diag_len = dev_data.x_video, dev_data.x_bert_sent, \
                     dev_data.x_bert_sent_mask, dev_data.y_emotion, dev_data.y_cause, dev_data.diag_len
                 x_a_v = [torch.from_numpy(x_v).to(device) for _ in range(2)]

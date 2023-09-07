@@ -2,7 +2,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
-from transformers import BertTokenizer, BertModel, BertConfig
+from transformers import BertModel, BertConfig
+from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 
 bert_path = 'F:/python_work/GitHub/bert-base-uncased'
 
@@ -20,12 +21,28 @@ def get_mask(length, max_len, out_shape):
     return ret
 
 
-def concat_feature(x, x_audio, x_video):
-    if x_audio is not None:
-        x = torch.cat([x, x_audio], dim=-1)
-    if x_video is not None:
-        x = torch.cat([x, x_video], dim=-1)
-    return x
+def softmax_with_length_mask(input, length):
+    # input shape:[batch_size, 1, max_len]
+    input = torch.exp(input.float())
+    input *= get_mask(length, input.shape[-1], input.shape)
+    exp_sum = torch.sum(input, dim=-1, keepdim=True) + 1e-9
+    return input / exp_sum
+
+
+def concat_feature(tensors):
+    return torch.cat(tensors, dim=-1)
+
+
+class BiLSTM(nn.Module):
+    def __init__(self, input_dim, hidden_dim, num_layers, dropout=0.5):
+        super(BiLSTM, self).__init__()
+        self.lstm = nn.LSTM(input_dim, hidden_dim, num_layers, batch_first=True, dropout=dropout, bidirectional=True)
+
+    def forward(self, x, length):
+        x = pack_padded_sequence(x, length, batch_first=True, enforce_sorted=False)
+        output, _ = self.lstm(x)
+        output, _ = pad_packed_sequence(output, batch_first=True)
+        return output
 
 
 class RealTimeTransformer(nn.Module):
@@ -173,13 +190,24 @@ class MECPEStep1(nn.Module):
             x_video_emotion = self.relu(self.norm(self.linear_video_emotion(x_video)))
             x_video_cause = self.relu(self.norm(self.linear_video_cause(x_video)))
 
-        x_emotion = concat_feature(s_bert, x_audio_emotion if self.use_audio else None,
-                                   x_video_emotion if self.use_video else None)
+        if self.use_audio and self.use_video:
+            tensors_emo = [s_bert, x_audio_emotion, x_video_emotion]
+            tensors_cause = [s_bert, x_audio_cause, x_video_cause]
+        elif self.use_audio:
+            tensors_emo = [s_bert, x_audio_emotion]
+            tensors_cause = [s_bert, x_audio_cause]
+        elif self.use_video:
+            tensors_emo = [s_bert, x_video_emotion]
+            tensors_cause = [s_bert, x_video_cause]
+        else:
+            tensors_emo = [s_bert]
+            tensors_cause = [s_bert]
+
+        x_emotion = concat_feature(tensors_emo)
         x_emotion = x_emotion * feature_mask
         x_emotion = self.linear_fusion_emotion(x_emotion)
 
-        x_cause = concat_feature(s_bert, x_audio_cause if self.use_audio else None,
-                                 x_video_cause if self.use_video else None)
+        x_cause = concat_feature(tensors_cause)
         x_cause = x_cause * feature_mask
         x_cause = self.linear_fusion_cause(x_cause)
         # Get the expression vector of emotion and cause
@@ -214,5 +242,99 @@ class MECPEStep1(nn.Module):
 
 
 class MECPEStep2(nn.Module):
-    def __init__(self):
+    def __init__(self, hidden_dim, dropout=None,
+                 embeddings=None,
+                 use_audio=True,
+                 use_video=True,
+                 choose_emo_cat=False
+                 ):
+        """
+        The second step of MECPE.
+        :param hidden_dim: The output dimension of the Linear layer.
+        :param dropout: The dropout rate, it is a list of [dropout_audio, dropout_video, dropout_word, dropout_LSTM, dropout_softmax]. If it is a float, then it is the global dropout.
+        :param embeddings: The embeddings of audio, video and word, which is [audio_embeddings, video_embeddings, word_embeddings, position_embeddings]
+        :param use_audio:
+        :param use_video:
+        :param choose_emo_cat: Whether to take the emotion category into consideration.
+        """
         super(MECPEStep2, self).__init__()
+        self.audio_embeddings, self.video_embeddings, self.word_embeddings, self.position_embeddings = embeddings
+        self.use_audio = use_audio
+        self.use_video = use_video
+        self.choose_emo_cat = choose_emo_cat
+        self.hidden_dim = hidden_dim
+        if dropout is None:
+            dropout = [0.5, 0.5, 0., 0.1, 0.5]
+        elif isinstance(dropout, list):
+            dropout = dropout
+        else:
+            dropout = [dropout] * 5
+
+        self.linear_audio = nn.Linear(6373, hidden_dim)
+        self.linear_video = nn.Linear(4096, hidden_dim)
+        self.linear_attention1 = nn.Linear(hidden_dim, hidden_dim)
+        self.linear_attention2 = nn.Linear(hidden_dim, 1, bias=False)
+        self.linear_softmax = nn.Linear(2 * hidden_dim * (np.sum([self.use_audio, self.use_video]) + 1)
+                                        + (2 if self.choose_emo_cat else 1) * self.position_embeddings.shape[-1], 2)
+        self.lstm = BiLSTM(hidden_dim, hidden_dim, 1, dropout=dropout[3])
+
+        self.relu = nn.ReLU()
+        self.norm = nn.LayerNorm(hidden_dim)
+        self.softmax = nn.LogSoftmax(dim=-1)
+        self.tanh = nn.Tanh()
+
+        self.dropout_audio, self.dropout_video, self.dropout_word = [nn.Dropout(dropout[i]) for i in range(3)]
+        self.dropout_softmax = nn.Dropout(dropout[4])
+
+    def forward(self, x, x_video, distance, sent_len, x_emo_cat=None):
+        if self.choose_emo_cat and x_emo_cat is None:
+            raise ValueError('You should input the emotion category.')
+
+        # Embeddings
+        # After embedding:
+        # x shape:[batch_size, 2, max_sent_len, emb_dim]
+        # x_video shape:[batch_size, 2, 4096]
+        # x_audio shape:[batch_size, 2, 6373]
+        # x_distance shape:[batch_size, pos_emb_dim]
+        # x_emo_cat shape:[batch_size, pos_emb_dim]
+        x = F.embedding(x, self.word_embeddings)
+        x = self.dropout_word(x)
+        if self.use_audio:
+            x_audio = F.embedding(x_video, self.audio_embeddings)
+            x_audio = self.dropout_audio(x_audio)
+            x_audio = self.relu(self.norm(self.linear_audio(x_audio)))
+        if self.use_video:
+            x_video = F.embedding(x_video, self.video_embeddings)
+            x_video = self.dropout_video(x_video)
+            x_video = self.relu(self.norm(self.linear_video(x_video)))
+        x_distance = F.embedding(distance, self.position_embeddings)
+        if self.choose_emo_cat:
+            x_emo_cat = F.embedding(x_emo_cat, self.position_embeddings)
+
+        # Attention
+        sent_len = sent_len.reshape(-1)
+        x = x.reshape(-1, x.shape[-2], x.shape[-1])  # [batch_size * 2, max_sent_len, emb_dim]
+        x = self.lstm(x, sent_len)  # [batch_size * 2, max_sent_len, hidden_dim]
+        tmp = x.reshape(-1, x.shape[-1])  # [batch_size * 2 * max_sent_len, hidden_dim]
+        q = self.tanh(self.linear_attention1(tmp))  # [batch_size * 2 * max_sent_len, hidden_dim]
+        alpha = self.linear_attention2(q).reshape(-1, 1, x.shape[1])  # [batch_size * 2, 1, max_sent_len]
+        alpha = softmax_with_length_mask(alpha, sent_len)  # [batch_size * 2, 1, max_sent_len]
+        x = torch.bmm(alpha, x).reshape(-1, 2, x.shape[-1])  # [batch_size, 2, hidden_dim]
+
+        # Fusion
+        tensors = [x]
+        if self.use_audio:
+            tensors.append(x_audio)
+        if self.use_video:
+            tensors.append(x_video)
+        x = concat_feature(tensors)
+        x = x.reshape(-1, 2 * x.shape[-1])  # [batch_size, 2*combined_dim]
+        tensors = [x, x_distance]
+        if self.choose_emo_cat:
+            tensors.append(x_emo_cat)
+        x = concat_feature(
+            tensors)  # [batch_size, 2*combined_dim + pos_emb_dim] or [batch_size, 2*combined_dim + 2*pos_emb_dim]
+        x = self.dropout_softmax(x)
+        x = self.linear_softmax(x)
+        output = self.softmax(x)
+        return output
