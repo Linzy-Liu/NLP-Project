@@ -4,6 +4,7 @@ import torch.nn as nn
 from transformers import get_linear_schedule_with_warmup
 import numpy as np
 import data
+import os
 import model
 
 epochs = 20  # The number of epochs
@@ -42,6 +43,9 @@ if __name__ == '__main__':
         choose_emo_cat=choose_emo_cat,
         bert_path=bert_path
     ).to(device)
+    if os.path.exists('step1/save/model.pt'):
+        model1.load_state_dict(torch.load('step1/save/model.pt'))
+        print('Model loaded.')
     criterion = nn.NLLLoss()  # Since we've used log_softmax in the model, we use NLLLoss here.
 
 
@@ -120,6 +124,7 @@ if __name__ == '__main__':
 
             with torch.no_grad():
                 model1.eval()
+                torch.save(model1.state_dict(), 'step1/save/model.pt')
                 x_v, x_bert_sent, x_bert_sent_mask, y_emotion, y_cause, diag_len = dev_data.x_video, dev_data.x_bert_sent, \
                     dev_data.x_bert_sent_mask, dev_data.y_emotion, dev_data.y_cause, dev_data.diag_len
                 x_a_v = [torch.from_numpy(x_v).to(device) for _ in range(2)]

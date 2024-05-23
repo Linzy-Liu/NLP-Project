@@ -304,7 +304,6 @@ class DataSet(object):
                  choose_emo_cat=False,
                  do_lower_case=True,
                  real_time=True,
-                 pos_embedding_dim=50,
                  task_type='',
                  step=1
                  ):
