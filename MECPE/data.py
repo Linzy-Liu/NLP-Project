@@ -325,7 +325,7 @@ class DataSet(object):
                                 bert_path, choose_emo_cat,
                                 do_lower_case, real_time)
         elif step == 2:
-            v_id_mapping, self.video_embedding, self.audio_embedding = get_video_and_audio(*paths[1:])
+            v_id_mapping, self.video_embedding, self.audio_embedding = get_video_and_audio(*paths[2:])
             self.word_embedding, self.pos_embedding, word2idx = var_list
             if choose_emo_cat:
                 self.x, self.x_video, self.y, self.diag_id, self.diag_len, self.sent_len, \

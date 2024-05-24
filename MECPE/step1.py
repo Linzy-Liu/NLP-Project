@@ -17,6 +17,7 @@ max_sent_len = 35
 report_freq = 100
 real_time = True
 choose_emo_cat = False
+# bert_path = '/home/liuyuzhe/bert-base-uncased'
 bert_path = 'F:/python_work/GitHub/bert-base-uncased'
 
 if __name__ == '__main__':
